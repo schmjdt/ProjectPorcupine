@@ -1,49 +1,31 @@
-﻿using UnityEngine;
-using System.Collections;
+#region License
+// ====================================================
+// Project Porcupine Copyright(C) 2016 Team Porcupine
+// This program comes with ABSOLUTELY NO WARRANTY; This is free software, 
+// and you are welcome to redistribute it under certain conditions; See 
+// file LICENSE, which is part of this source code package, for details.
+// ====================================================
+#endregion
+
+using ProjectPorcupine.Localization;
+using UnityEngine;
 using UnityEngine.UI;
 
-public class MouseOverFurnitureTypeText : MonoBehaviour
+/// <summary>
+/// MouseOverFurnitureTypeText implements the abstract class MouseOver.
+/// It returns info strings that represent the tiles furniture type.
+/// </summary>
+public class MouseOverFurnitureTypeText : MouseOver
 {
-
-    // Every frame, this script checks to see which tile
-    // is under the mouse and then updates the GetComponent<Text>.text
-    // parameter of the object it is attached to.
-
-    Text myText;
-    MouseController mouseController;
-
-    // Use this for initialization
-    void Start()
+    protected override string GetMouseOverString(Tile tile)
     {
-        myText = GetComponent<Text>();
-
-        if (myText == null)
+        if (tile != null && tile.Furniture != null)
         {
-            Debug.LogError("MouseOverTileTypeText: No 'Text' UI component on this object.");
-            this.enabled = false;
-            return;
+            return LocalizationTable.GetLocalization("furniture", LocalizationTable.GetLocalization(tile.Furniture.LocalizationCode));
         }
-
-        mouseController = GameObject.FindObjectOfType<MouseController>();
-        if (mouseController == null)
+        else
         {
-            Debug.LogError("How do we not have an instance of mouse controller?");
-            return;
+            return string.Empty;
         }
-    }
-	
-    // Update is called once per frame
-    void Update()
-    {
-        Tile t = mouseController.GetMouseOverTile();
-
-        string s = "NULL";
-
-        if (t != null && t.furniture != null)
-        {
-            s = t.furniture.Name;
-        }
-
-        myText.text = "Furniture: " + s;
     }
 }

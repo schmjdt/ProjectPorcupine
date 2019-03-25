@@ -1,175 +1,297 @@
-﻿using UnityEngine;
-using System.IO;
+#region License
+// ====================================================
+// Project Porcupine Copyright(C) 2016 Team Porcupine
+// This program comes with ABSOLUTELY NO WARRANTY; This is free software, 
+// and you are welcome to redistribute it under certain conditions; See 
+// file LICENSE, which is part of this source code package, for details.
+// ====================================================
+#endregion
+
+using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Xml;
+using UnityEngine;
 
 namespace ProjectPorcupine.Localization
 {
-    /**
-     * <summary>
-     * The central class containing localization information.
-     * </summary>
-     */
+    /// <summary>
+    /// The central class containing localization information.
+    /// </summary>
     public static class LocalizationTable
     {
-        public enum FallbackMode
-        {
-            ReturnKey, ReturnEmpty, ReturnEnglish
-        }
+        // The current language. This will be automatically be set by the LocalizationLoader.
+        // Default is English.
+        public static string currentLanguage = DefaultLanguage;
 
-        //The dictionary that stores all the localization values.
-        static Dictionary<string, string> localizationTable = new Dictionary<string, string>();
-
-        //The current language. This will be automatically be set by the LocalizationLoader.
-        //Default is English.
-        public static string currentLanguage = "en_US";
-
-        //Used by the LocalizationLoader to ensure that the localization files are only loaded once.
+        // Used by the LocalizationLoader to ensure that the localization files are only loaded once.
         public static bool initialized = false;
 
-        //List with all languages.
-        static List<string> registeredLanguages = new List<string>();
+        private static readonly string DefaultLanguage = "en_US";
 
-        /**
-         * <summary>
-         * Load a localization file from the harddrive.
-         * 
-         * <param name="path">
-         * The path to the file.
-         * </param>
-         * </summary>
-         */
+        // Contains basic information about each localization
+        private static Dictionary<string, LocalizationData> localizationConfigurations;
+
+        // The dictionary that stores all the localization values.
+        private static Dictionary<string, Dictionary<string, string>> localizationTable = new Dictionary<string, Dictionary<string, string>>();
+
+        // Does the config exists? Initally assumes true. Used to silence repetitive errors
+        private static bool configExists = true;
+
+        // Keeps track of what keys we've already logged are missing.
+        private static HashSet<string> missingKeysLogged = new HashSet<string>();
+
+        public static event Action CBLocalizationFilesChanged;
+
+        public enum FallbackMode
+        {
+            ReturnKey, ReturnDefaultLanguage
+        }
+
+        /// <summary>
+        /// Load a localization file from the harddrive.
+        /// </summary>
+        /// <param name="path">The path to the file.</param>
         public static void LoadLocalizationFile(string path)
         {
             string localizationCode = Path.GetFileNameWithoutExtension(path);
             LoadLocalizationFile(path, localizationCode);
         }
 
-        /**
-         * <summary>
-         * Load a localization file from the harddrive with a defined localization code.
-         * 
-         * <para>
-         * string path: The path to the file.
-         * </para>
-         * <para>
-         * string localizationCode: The localization code, e.g.: "en_US", "en_UK"
-         * </para>
-         * </summary>
-         */
-        public static void LoadLocalizationFile(string path, string localizationCode)
+        /// <summary>
+        /// Returns the localization for the given key, or the key itself, if no translation exists.
+        /// </summary>
+        /// <param name="key">The key that should be searched for.</param>
+        /// <param name="additionalValues">The values that should be inserted.</param>
+        /// <returns></returns>
+        public static string GetLocalization(string key, params object[] additionalValues)
         {
-            //Read the contents of the file. This might throw an exception!
-            string[] lines = File.ReadAllLines(path);
+            // Return the localization of the advanced method.
+            return GetLocalization(key, FallbackMode.ReturnDefaultLanguage, currentLanguage, additionalValues);
+        }
 
-            //Create an empty char array outside the foreach loop, for optimization reasons.
-            //This is used as a storage for the chars in the line.
-            char[] chars;
-
-            //The key that the loop assembled.
-            string currentKey = "";
-            //The value that the loop assembled.
-            string currentValue = "";
-            //Is the loop already done with figuring out the key?
-            bool searchingValue = false;
-
-            foreach(string line in lines)
+        /// <summary>
+        /// Returns the localization for the given key, or the key itself, if no translation exists.
+        /// </summary>
+        public static string GetLocalization(string key, FallbackMode fallbackMode, string language, params object[] additionalValues)
+        {
+            string value;
+            if (localizationTable.ContainsKey(language) && localizationTable[language].TryGetValue(key, out value))
             {
-                //Reuse the array (for reducing RAM usage).
-                chars = line.ToCharArray();
+                return string.Format(value, additionalValues);
+            }
 
-                //Set searching value to false.
-                searchingValue = false;
-                //Set the key to an empty string.
-                currentKey = "";
-                //Set the value to an empty string.
-                currentValue = "";
+            // If the key is improperly formatted then try to fix it and retry the lookup.
+            if (key.Contains(" ") || key.Any(c => char.IsUpper(c)))
+            {
+                key = key.Replace(' ', '_').ToLower();
+                GetLocalization(key, fallbackMode, language, additionalValues);
+            }
 
-                //Go through each char contained in this line.
-                foreach (char c in chars)
+            if (!missingKeysLogged.Contains(key))
+            {
+                missingKeysLogged.Add(key);
+                UnityDebugger.Debugger.Log("LocalizationTable", string.Format("Translation for {0} in {1} language failed: Key not in dictionary.", key, language));
+            }
+
+            switch (fallbackMode)
+            {
+                case FallbackMode.ReturnKey:
+                    return additionalValues != null && additionalValues.Length >= 1 ? key + " " + additionalValues[0] : key;
+                case FallbackMode.ReturnDefaultLanguage:
+                    return GetLocalization(key, FallbackMode.ReturnKey, DefaultLanguage, additionalValues);
+                default:
+                    return string.Empty;
+            }
+        }
+
+        public static string GetLocalizaitonCodeLocalization(string code)
+        {
+            if (localizationConfigurations.ContainsKey(code) == false)
+            {
+                UnityDebugger.Debugger.Log("LocalizationTable", "name of " + code + " is not present in config.xml");
+                return code;
+            }
+
+            return localizationConfigurations[code].LocalName;
+        }
+
+        public static void SetLocalization(int lang)
+        {
+            string[] languages = GetLanguages();
+            currentLanguage = languages[lang];
+            Settings.SetSetting("localization", languages[lang]);
+            LocalizationLoader loader = GameObject.Find("GameController").GetComponent(typeof(LocalizationLoader)) as LocalizationLoader;
+            loader.UpdateLocalizationTable();
+        }
+
+        public static void LoadingLanguagesFinished()
+        {
+            initialized = true;
+
+            // C# 6 Support pls ;_;
+            if (CBLocalizationFilesChanged != null)
+            {
+                CBLocalizationFilesChanged();
+            }
+        }
+
+        /// <summary>
+        /// Gets all languages present in library.
+        /// </summary>
+        public static string[] GetLanguages()
+        {
+            return localizationTable.Keys.ToArray();
+        }
+
+        public static void LoadConfigFile(string pathToConfigFile)
+        {
+            localizationConfigurations = new Dictionary<string, LocalizationData>();
+
+            if (File.Exists(pathToConfigFile) == false)
+            {
+                UnityDebugger.Debugger.LogError("LocalizationTable", "No config file found at: " + pathToConfigFile);
+                configExists = false;
+                return;
+            }
+
+            XmlReader reader = XmlReader.Create(pathToConfigFile);
+            while (reader.Read())
+            {
+                if (reader.NodeType == XmlNodeType.Element && reader.Name == "language")
                 {
-                    if (!searchingValue) //Check if the loop is searching for a value.
+                    if (reader.HasAttributes)
                     {
-                        if (c != '=') //Check if the current char is an '=', if not, add the char to the key.
-                        {
-                            //Add the char to the key.
-                            currentKey += c;
-                        }
-                        else
-                        {
-                            //The char is an '=', set searchingValue to true and ignore the current char.
-                            searchingValue = true;
-                        }
+                        string code = reader.GetAttribute("code");
+                        string localName = reader.GetAttribute("name");
+                        bool rtl = (reader.GetAttribute("rtl") == "true") ? true : false;
+
+                        localizationConfigurations.Add(code, new LocalizationData(code, localName, rtl));
+                    }
+                }
+            }
+
+            reader.Close();
+        }
+
+        /// <summary>
+        /// Reverses the order of characters in a string. Used for Right to Left languages, since UI doesn't do so automatically.
+        /// </summary>
+        /// <param name="original">The original and correct RTL text.</param>
+        /// <returns>The string with the order of the characters reversed.</returns>
+        public static string ReverseString(string original)
+        {
+            if (original == null)
+            {
+                return null;
+            }
+
+            char[] letterArray = original.ToCharArray();
+            Array.Reverse(letterArray);
+            string reverse = new string(letterArray);
+            string[] revArray = reverse.Split(new char[] { '}', '{' });
+
+            int throwAway;
+            for (int i = 0; i < revArray.Length; i++)
+            {
+                // No brackets found, so just skip parsing them
+                if (revArray.Length == 1)
+                {
+                    break;
+                }
+
+                if (int.TryParse(revArray[i], out throwAway))
+                {
+                    // This is the middle of a {#} segment of the string so let's add back the {} in the correct order for the parser
+                    // Note: revArray[i] is passed through ReverseString again so that the numbers digits order is flipped back to LTR
+                    revArray[i] = "{" + ReverseString(revArray[i]) + "}";
+                }
+                else
+                {
+                    // For now lets assume that passing in { or } without a number in between is likely an error
+                    // why would a string need curly brackets in game?
+                    // Note: this removes the curly braces and cannot replace them since string.split doesn't say whether { or } appeared
+                    UnityDebugger.Debugger.LogWarning("LocalizationTable", "{ or } exist in localization string '" + original + "' for " + currentLanguage + "but do not enclose a number for string substitution.");
+                }
+            }
+
+            // rebuild the reversed string
+            return string.Join(null, revArray);
+        }
+
+        /// <summary>
+        /// Destroy all recorded Delegates when changing scenes.
+        /// </summary>
+        public static void UnregisterDelegates()
+        {
+            CBLocalizationFilesChanged = null;
+        }
+
+        /// <summary>
+        /// Load a localization file from the harddrive with a defined localization code.
+        /// </summary>
+        /// <param name="path">The path to the file.</param>
+        /// <param name="localizationCode">The localization code, e.g.: "en_US", "en_UK".</param>
+        private static void LoadLocalizationFile(string path, string localizationCode)
+        {
+            try
+            {
+                if (localizationTable.ContainsKey(localizationCode) == false)
+                {
+                    localizationTable[localizationCode] = new Dictionary<string, string>();
+                }
+
+                if (configExists && localizationConfigurations.ContainsKey(localizationCode) == false)
+                {
+                    UnityDebugger.Debugger.LogError("LocalizationTable", "Language: " + localizationCode + " not defined in localization/config.xml");
+                }
+
+                // Only the current and default languages translations will be loaded in memory.
+                if (localizationCode == DefaultLanguage || localizationCode == currentLanguage)
+                {
+                    bool rightToLeftLanguage;
+                    if (localizationConfigurations.ContainsKey(localizationCode) == false)
+                    {
+                        UnityDebugger.Debugger.LogWarning("LocalizationTable", "Assuming " + localizationCode + " is LTR");
+                        rightToLeftLanguage = false;
                     }
                     else
                     {
-                        //The loop is searching for a value. Add the current char, regardless of what it is.
-                        currentValue += c;
+                        rightToLeftLanguage = localizationConfigurations[localizationCode].IsRightToLeft;
+                    }
+
+                    string[] lines = File.ReadAllLines(path);
+
+                    foreach (string line in lines)
+                    {
+                        if (line.Length < 1 || line[0] == '#')
+                        {
+                            continue;
+                        }
+
+                        string[] keyValuePair = line.Split(new char[] { '=' }, 2);
+
+                        if (keyValuePair.Length != 2)
+                        {
+                            UnityDebugger.Debugger.LogError("LocalizationTable", string.Format("Invalid format of localization string. Actual {0}", line));
+                            continue;
+                        }
+
+                        if (rightToLeftLanguage)
+                        {
+                            // reverse order of letters in the localization string since unity UI doesn't support RTL languages
+                            keyValuePair[1] = ReverseString(keyValuePair[1]);
+                        }
+
+                        localizationTable[localizationCode][keyValuePair[0]] = keyValuePair[1];
                     }
                 }
-
-                //Add the new key+value to the localization table.
-                localizationTable.Add(localizationCode + "_" + currentKey, currentValue);
             }
-
-            registeredLanguages.Add(localizationCode);
-        }
-
-        /**
-         * <summary>
-         * Returns the localization for the given key, or the key itself, if no translation exists.
-         * </summary>
-         * 
-         * <para>
-         * string key: The key that should be searched for.
-         * </para>
-         * 
-         * <para>
-         * params string[] additionalValues: The values that should be inserted.
-         * </para>
-         */
-        public static string GetLocalization(string key, params string[] additionalValues)
-        {
-            //Return the localization of the advanced method.
-            return GetLocalization(key, FallbackMode.ReturnEnglish, currentLanguage, additionalValues);
-        }
-
-        /**
-         * <summary>
-         * Returns the localization for the given key, or the key itself, if no translation exists.
-         * </summary>
-         */
-        public static string GetLocalization(string key, FallbackMode fallbackMode, string language, params string[] additionalValues)
-        {
-            try //Use a try-catch statement, since this operation might throw a KeyNotFoundException.
+            catch (FileNotFoundException exception)
             {
-                //Ideally, return the correct value.
-                return string.Format(localizationTable[language + "_" + key], additionalValues);
+                UnityDebugger.Debugger.LogError("LocalizationTable", new Exception(string.Format("There is no localization file for {0}", localizationCode), exception).ToString());
             }
-            catch
-            {
-#if UNITY_EDITOR //TODO: Think if #if is a good idea or not.
-                //Log a warning into the console if this operation fails.
-                Debug.LogWarning("Translation for " + key + " failed: Key not in dictionary.");
-#endif
-
-                //Switch the fallback mode.
-                switch (fallbackMode)
-                {
-                    case FallbackMode.ReturnKey:
-                        if(additionalValues.Length >= 1)
-                        {
-                            return key + " " + additionalValues[0];
-                        }
-                        return key; //Just return the key.
-                    case FallbackMode.ReturnEnglish: return GetLocalization(key, FallbackMode.ReturnKey, "en_US", additionalValues); //Return the english equivalent.
-                    default: return ""; //Return an empty string.
-                }
-            }
-        }
-
-        public static string[] GetLanguages()
-        {
-            return registeredLanguages.ToArray();
         }
     }
 }
